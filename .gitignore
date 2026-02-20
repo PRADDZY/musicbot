@@ -1,0 +1,11 @@
+node_modules
+.env
+.env.*
+!.env.example
+logs
+*.log
+.DS_Store
+lavalink/application.yml
+guild-settings.json
+guild-stats.json
+*.key
