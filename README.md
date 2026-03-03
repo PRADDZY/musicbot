@@ -3,7 +3,7 @@
 A Discord music bot that uses Lavalink for playback and supports multiple streaming services via Lavalink source plugins.
 
 ## Features
-- Slash commands for play, playnext, search, insert, pause, resume, skip, unskip, jumpback, voteskip, skipto, stop, clearqueue, removeuser, queuelock, queuefreeze, sleep, mode247, queuesnapshot, queue, nowplaying, nowplayingcard, botinfo, replay, volume, forward, rewind, seek, lyrics, lyricslive, normalize, eq, loop, shuffle, remove, move, queuemode, radio, autoclean, ping, settings, toptracks, topartists, history, leave
+- Slash commands for play, playnext, search, insert, pause, resume, skip, unskip, jumpback, voteskip, skipto, stop, clearqueue, removeuser, queuelock, queuefreeze, sleep, mode247, queuesnapshot, join, leave, queue, nowplaying, nowplayingcard, botinfo, replay, volume, forward, rewind, seek, lyrics, lyricslive, normalize, eq, loop, autoplay, shuffle, bump, remove, move, swap, queuemode, radio, autoclean, ping, settings, toptracks, topartists, history
 - `/play` accepts URLs, search queries, or an attached audio file (mp3, m4a, ogg, flac)
 - `/playnext` inserts tracks at the front of the queue
 - `/lyrics` fetches lyrics for the current track or a query
@@ -19,8 +19,10 @@ A Discord music bot that uses Lavalink for playback and supports multiple stream
 - `/autoclean` removes duplicates or unavailable tracks
 - `/settings` stores per-guild defaults and limits in `guild-settings.json`
 - `/mode247` keeps the bot connected when idle (per-guild setting)
+- `/autoplay` keeps playback going with auto-recommendations when the queue ends
 - `/queuelock` and `/queuefreeze` add queue protection controls
 - `/queuesnapshot` saves and reloads queue states from `queue-snapshots.json`
+- `/queue` supports pagination with `/queue page:<n>`
 - `/toptracks` shows the most played tracks (from `guild-stats.json`)
 - `/topartists` shows the most played artists (derived from `guild-stats.json`)
 - Lavalink backend for stable audio delivery
@@ -45,6 +47,7 @@ A Discord music bot that uses Lavalink for playback and supports multiple stream
    Configure `LAVALINK_FALLBACKS` if you want automatic node failover.
    Update `stations.json` with radio/lofi station URLs if you want to use `/radio`.
    Set `ALWAYS_ON_DEFAULT=true` if you want 24/7 mode on by default for new guild settings.
+   Set `AUTOPLAY_DEFAULT=true` if you want autoplay enabled by default for new guild settings.
    Optional: install `@napi-rs/canvas` to enable `/nowplayingcard`.
    Example fallback format:
    ```bash
@@ -107,8 +110,9 @@ Replace the placeholder credential values in `lavalink/application.yml` with you
 - `/queuesnapshot save name` - Save the current queue as a snapshot
 - `/queuesnapshot load name` - Load a saved snapshot
 - `/queuesnapshot delete name` - Delete a snapshot
+- `/join` - Connect to your voice channel
 - `/leave` - Disconnect from voice
-- `/queue` - Show the current queue
+- `/queue [page]` - Show the current queue page
 - `/nowplaying` - Show the current track
 - `/nowplayingcard` - Show a now playing image card
 - `/botinfo` - Show bot and Lavalink status
@@ -123,9 +127,12 @@ Replace the placeholder credential values in `lavalink/application.yml` with you
 - `/normalize enabled [target]` - Enable/disable normalization (filter volume)
 - `/eq preset` - Apply an EQ preset
 - `/loop mode` - Loop off/track/queue
+- `/autoplay enable|disable|status` - Control autoplay recommendations
 - `/shuffle` - Shuffle the queue
+- `/bump position` - Move a queued track to next up
 - `/remove position` - Remove a track
 - `/move from to` - Move a track
+- `/swap first second` - Swap two queue positions
 - `/queuemode mode` - Set queue mode (linear or fair)
 - `/radio list` - Show configured stations
 - `/radio play station` - Play a station from `stations.json`

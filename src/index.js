@@ -35,6 +35,7 @@ const autoCleanMaxCheckRaw = Number(process.env.AUTOCLEAN_MAX_CHECK || 50);
 const maxQueueLengthDefaultRaw = Number(process.env.MAX_QUEUE_LENGTH_DEFAULT || 200);
 const prefixDefaultRaw = String(process.env.PREFIX_DEFAULT || '!').trim();
 const alwaysOnDefaultRaw = String(process.env.ALWAYS_ON_DEFAULT || 'false').toLowerCase().trim();
+const autoplayDefaultRaw = String(process.env.AUTOPLAY_DEFAULT || 'false').toLowerCase().trim();
 const webhookUrlRaw = String(process.env.WEBHOOK_URL || '').trim();
 const stationsFile = process.env.STATIONS_FILE || 'stations.json';
 const guildSettingsFile = process.env.GUILD_SETTINGS_FILE || 'guild-settings.json';
@@ -64,6 +65,7 @@ const config = {
   maxQueueLengthDefault: clampNumber(maxQueueLengthDefaultRaw, 10, 1000),
   prefixDefault: prefixDefaultRaw || '!',
   alwaysOnDefault: alwaysOnDefaultRaw === 'true',
+  autoplayDefault: autoplayDefaultRaw === 'true',
   webhookUrl: webhookUrlRaw,
   stationsFile,
   guildSettingsFile,
@@ -196,6 +198,9 @@ client.on('interactionCreate', async (interaction) => {
       case 'queuesnapshot':
         await handleQueueSnapshot(interaction);
         break;
+      case 'join':
+        await handleJoin(interaction);
+        break;
       case 'leave':
         await handleLeave(interaction);
         break;
@@ -241,14 +246,23 @@ client.on('interactionCreate', async (interaction) => {
       case 'loop':
         await handleLoop(interaction);
         break;
+      case 'autoplay':
+        await handleAutoplay(interaction);
+        break;
       case 'shuffle':
         await handleShuffle(interaction);
+        break;
+      case 'bump':
+        await handleBump(interaction);
         break;
       case 'remove':
         await handleRemove(interaction);
         break;
       case 'move':
         await handleMove(interaction);
+        break;
+      case 'swap':
+        await handleSwap(interaction);
         break;
       case 'queuemode':
         await handleQueueMode(interaction);
@@ -370,6 +384,7 @@ function getDefaultGuildSettings() {
     autoDisconnectSec: config.autoDisconnectMs / 1000,
     maxQueueLength: config.maxQueueLengthDefault,
     alwaysOn: config.alwaysOnDefault,
+    autoplay: config.autoplayDefault,
     normalization: {
       enabled: config.normalizationEnabledDefault,
       target: config.normalizationTargetDefault
@@ -516,6 +531,9 @@ function createQueue(guildId, voiceChannelId, textChannelId, player) {
     sleepEndsAt: null,
     locked: false,
     frozen: false,
+    autoplay: settings.autoplay,
+    lastPlayedTrack: null,
+    autoplayInProgress: false,
     settings,
     alwaysOn: settings.alwaysOn,
     normalization: {
@@ -581,6 +599,7 @@ function applySettingsToQueue(queue) {
   };
   queue.eqPreset = settings.eqPreset;
   queue.alwaysOn = settings.alwaysOn;
+  queue.autoplay = settings.autoplay;
   if (queue.alwaysOn) {
     clearIdleTimer(queue);
     clearAloneTimer(queue);
@@ -1413,6 +1432,30 @@ async function handleQueueSnapshot(interaction) {
   return interaction.reply({ content: 'Unsupported snapshot action.', ephemeral: true });
 }
 
+async function handleJoin(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+
+  const memberChannel = interaction.member?.voice?.channel;
+  if (!memberChannel) {
+    return interaction.reply({ content: 'Join a voice channel first.', ephemeral: true });
+  }
+
+  const existingQueue = getQueue(interaction.guildId);
+  if (existingQueue && existingQueue.voiceChannelId === memberChannel.id) {
+    return interaction.reply({ content: `Already connected to **${memberChannel.name}**.` });
+  }
+
+  await interaction.deferReply();
+  const prepared = await ensureQueueForInteraction(interaction, memberChannel);
+  if (prepared.error) {
+    return interaction.editReply({ content: prepared.error });
+  }
+
+  return interaction.editReply({ content: `Connected to **${memberChannel.name}**.` });
+}
+
 async function handleLeave(interaction) {
   const queue = getQueue(interaction.guildId);
   if (!queue) {
@@ -1433,23 +1476,39 @@ async function handleQueue(interaction) {
     return interaction.reply({ content: 'The queue is empty.', ephemeral: true });
   }
 
+  const pageSize = 10;
+  const page = clampNumber(interaction.options.getInteger('page') ?? 1, 1, 999);
+  const totalPages = Math.max(1, Math.ceil(queue.tracks.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  const end = start + pageSize;
+
   const lines = [];
   if (queue.current) {
     lines.push(`Now playing: ${formatTrack(queue.current)}`);
   }
-  lines.push(`Queue mode: ${queue.mode}`);
+  lines.push(
+    `Queue mode: ${queue.mode} | Loop: ${queue.loop} | Autoplay: ${queue.autoplay ? 'on' : 'off'} | Tracks: ${queue.tracks.length}`
+  );
 
-  const upcoming = queue.tracks.slice(0, 10).map((track, index) => {
-    return `${index + 1}. ${formatTrack(track)}`;
+  const queuedDurationMs = queue.tracks.reduce((sum, track) => {
+    return sum + (track.length > 0 ? track.length : 0);
+  }, 0);
+  if (queuedDurationMs > 0) {
+    lines.push(`Queued duration: ${formatDuration(queuedDurationMs)}`);
+  }
+
+  const upcoming = queue.tracks.slice(start, end).map((track, index) => {
+    return `${start + index + 1}. ${formatTrack(track)}`;
   });
 
   if (upcoming.length) {
-    lines.push('Up next:');
+    lines.push(`Up next (page ${safePage}/${totalPages}):`);
     lines.push(...upcoming);
   }
 
-  if (queue.tracks.length > 10) {
-    lines.push(`And ${queue.tracks.length - 10} more...`);
+  if (queue.tracks.length > end) {
+    lines.push(`And ${queue.tracks.length - end} more...`);
   }
 
   return interaction.reply({ content: lines.join('\n') });
@@ -1849,6 +1908,34 @@ async function handleLoop(interaction) {
   return interaction.reply({ content: `Loop mode set to ${mode}.` });
 }
 
+async function handleAutoplay(interaction) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+
+  const action = interaction.options.getString('action', true);
+  if (action === 'status') {
+    const settings = getGuildSettings(guildId);
+    return interaction.reply({ content: `Autoplay is currently **${settings.autoplay ? 'enabled' : 'disabled'}**.` });
+  }
+
+  const queue = getQueue(guildId);
+  if (queue) {
+    if (!ensureSameChannel(interaction, queue)) {
+      return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+    }
+  }
+
+  const enabled = action === 'enable';
+  const settings = updateGuildSettings(guildId, { autoplay: enabled });
+  if (queue) {
+    queue.settings = settings;
+    queue.autoplay = settings.autoplay;
+  }
+  return interaction.reply({ content: `Autoplay ${enabled ? 'enabled' : 'disabled'}.` });
+}
+
 async function handleShuffle(interaction) {
   const queue = getQueue(interaction.guildId);
   if (!queue || queue.tracks.length < 2) {
@@ -1864,6 +1951,32 @@ async function handleShuffle(interaction) {
 
   shuffleArray(queue.tracks);
   return interaction.reply({ content: 'Queue shuffled.' });
+}
+
+async function handleBump(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue || queue.tracks.length < 2) {
+    return interaction.reply({ content: 'Not enough tracks to bump.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
+
+  const position = interaction.options.getInteger('position', true);
+  if (position < 1 || position > queue.tracks.length) {
+    return interaction.reply({ content: 'That position is out of range.', ephemeral: true });
+  }
+  if (position === 1) {
+    return interaction.reply({ content: 'That track is already next up.', ephemeral: true });
+  }
+
+  const [track] = queue.tracks.splice(position - 1, 1);
+  queue.tracks.unshift(track);
+  return interaction.reply({ content: `Bumped to next: ${formatTrack(track)}` });
 }
 
 async function handleRemove(interaction) {
@@ -1912,6 +2025,35 @@ async function handleMove(interaction) {
   queue.tracks.splice(to - 1, 0, track);
 
   return interaction.reply({ content: `Moved track to position ${to}.` });
+}
+
+async function handleSwap(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue || queue.tracks.length < 2) {
+    return interaction.reply({ content: 'Not enough tracks to swap.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
+
+  const first = interaction.options.getInteger('first', true);
+  const second = interaction.options.getInteger('second', true);
+  if (first < 1 || first > queue.tracks.length || second < 1 || second > queue.tracks.length) {
+    return interaction.reply({ content: 'That position is out of range.', ephemeral: true });
+  }
+  if (first === second) {
+    return interaction.reply({ content: 'Choose two different positions.', ephemeral: true });
+  }
+
+  const firstIndex = first - 1;
+  const secondIndex = second - 1;
+  [queue.tracks[firstIndex], queue.tracks[secondIndex]] = [queue.tracks[secondIndex], queue.tracks[firstIndex]];
+
+  return interaction.reply({ content: `Swapped queue positions ${first} and ${second}.` });
 }
 
 async function handleQueueMode(interaction) {
@@ -2240,6 +2382,7 @@ function formatSettings(settings) {
     `autoDisconnectSec: ${settings.autoDisconnectSec}`,
     `maxQueueLength: ${settings.maxQueueLength}`,
     `alwaysOn: ${settings.alwaysOn}`,
+    `autoplay: ${settings.autoplay}`,
     `normalization.enabled: ${settings.normalization.enabled}`,
     `normalization.target: ${settings.normalization.target}`,
     `eqPreset: ${settings.eqPreset}`
@@ -2295,6 +2438,11 @@ function buildSettingsPatch(key, value, guildId) {
       const flag = parseBoolean(value);
       if (flag === null) return null;
       return { alwaysOn: flag };
+    }
+    case 'autoplay': {
+      const flag = parseBoolean(value);
+      if (flag === null) return null;
+      return { autoplay: flag };
     }
     case 'normalization_enabled': {
       const flag = parseBoolean(value);
@@ -2744,6 +2892,12 @@ function buildTrackKey(track) {
   return `${track.title}|${track.author}|${track.length}`;
 }
 
+function isEquivalentTrack(a, b) {
+  if (!a || !b) return false;
+  if (a.uri && b.uri) return a.uri === b.uri;
+  return a.title === b.title && a.author === b.author && a.length === b.length;
+}
+
 function recordTrackPlay(queue, track) {
   if (!track) return;
   const stats = getGuildStats(queue.guildId);
@@ -2817,14 +2971,49 @@ async function handleTrackFailure(queue, label, data) {
   await stopLiveLyrics(queue, 'Live lyrics stopped (track error).');
   if (queue.current) {
     pushHistory(queue, queue.current);
+    queue.lastPlayedTrack = queue.current;
   }
   queue.current = null;
   await playNext(queue);
 }
 
+async function enqueueAutoplayTrack(queue) {
+  if (!queue?.autoplay || queue.autoplayInProgress) return false;
+  const seed = queue.lastPlayedTrack || queue.history[0] || null;
+  if (!seed) return false;
+
+  queue.autoplayInProgress = true;
+  try {
+    const node = queue.player?.node || getNode();
+    const query = `${seed.title} ${seed.author}`.trim();
+    if (!query) return false;
+
+    const resolved = await resolveTracks(node, `ytsearch:${query}`);
+    const candidates = resolved.tracks.map((track) => mapTrack(track, null));
+    const next = candidates.find((track) => !isEquivalentTrack(track, seed));
+    if (!next) return false;
+
+    next.requesterTag = 'Autoplay';
+    enqueueTracks(queue, [next], false);
+    return true;
+  } catch (error) {
+    console.error('Autoplay lookup failed:', error);
+    return false;
+  } finally {
+    queue.autoplayInProgress = false;
+  }
+}
+
 async function playNext(queue) {
   clearIdleTimer(queue);
-  const next = queue.tracks.shift();
+  let next = queue.tracks.shift();
+
+  if (!next) {
+    const autoplayQueued = await enqueueAutoplayTrack(queue);
+    if (autoplayQueued) {
+      next = queue.tracks.shift();
+    }
+  }
 
   if (!next) {
     queue.current = null;
@@ -2862,6 +3051,9 @@ function attachPlayerListeners(queue) {
 
     if (queue.current && queue.loop !== 'track') {
       pushHistory(queue, queue.current);
+    }
+    if (queue.current) {
+      queue.lastPlayedTrack = queue.current;
     }
 
     if (queue.loop === 'track' && queue.current) {

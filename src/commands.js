@@ -130,8 +130,14 @@ const commands = [
     .addStringOption((option) =>
       option.setName('name').setDescription('Snapshot name (required for save/load/delete)').setRequired(false)
     ),
+  new SlashCommandBuilder().setName('join').setDescription('Connect to your current voice channel'),
   new SlashCommandBuilder().setName('leave').setDescription('Disconnect from the voice channel'),
-  new SlashCommandBuilder().setName('queue').setDescription('Show the current queue'),
+  new SlashCommandBuilder()
+    .setName('queue')
+    .setDescription('Show the current queue')
+    .addIntegerOption((option) =>
+      option.setName('page').setDescription('Queue page (10 tracks per page)').setMinValue(1).setRequired(false)
+    ),
   new SlashCommandBuilder().setName('nowplaying').setDescription('Show the currently playing track'),
   new SlashCommandBuilder().setName('nowplayingcard').setDescription('Show a now playing image card'),
   new SlashCommandBuilder().setName('botinfo').setDescription('Show bot status and Lavalink info'),
@@ -228,7 +234,27 @@ const commands = [
           { name: 'queue', value: 'queue' }
         )
     ),
+  new SlashCommandBuilder()
+    .setName('autoplay')
+    .setDescription('Control autoplay recommendations when queue ends')
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Enable, disable, or view autoplay status')
+        .setRequired(true)
+        .addChoices(
+          { name: 'enable', value: 'enable' },
+          { name: 'disable', value: 'disable' },
+          { name: 'status', value: 'status' }
+        )
+    ),
   new SlashCommandBuilder().setName('shuffle').setDescription('Shuffle the queue'),
+  new SlashCommandBuilder()
+    .setName('bump')
+    .setDescription('Move a queued track to the next-up position')
+    .addIntegerOption((option) =>
+      option.setName('position').setDescription('Queue position (1 = next up)').setMinValue(1).setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName('remove')
     .setDescription('Remove a track from the queue')
@@ -243,6 +269,15 @@ const commands = [
     )
     .addIntegerOption((option) =>
       option.setName('to').setDescription('New position').setMinValue(1).setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('swap')
+    .setDescription('Swap two queue positions')
+    .addIntegerOption((option) =>
+      option.setName('first').setDescription('First queue position').setMinValue(1).setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option.setName('second').setDescription('Second queue position').setMinValue(1).setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName('queuemode')
@@ -315,6 +350,7 @@ const commands = [
           { name: 'auto_disconnect_sec', value: 'auto_disconnect_sec' },
           { name: 'max_queue_length', value: 'max_queue_length' },
           { name: 'always_on', value: 'always_on' },
+          { name: 'autoplay', value: 'autoplay' },
           { name: 'normalization_enabled', value: 'normalization_enabled' },
           { name: 'normalization_target', value: 'normalization_target' },
           { name: 'eq_preset', value: 'eq_preset' }
