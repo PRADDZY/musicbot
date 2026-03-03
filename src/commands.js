@@ -44,6 +44,13 @@ const commands = [
   new SlashCommandBuilder().setName('pause').setDescription('Pause playback'),
   new SlashCommandBuilder().setName('resume').setDescription('Resume playback'),
   new SlashCommandBuilder().setName('skip').setDescription('Skip the current track'),
+  new SlashCommandBuilder().setName('unskip').setDescription('Restore the most recently played track'),
+  new SlashCommandBuilder()
+    .setName('jumpback')
+    .setDescription('Jump back to a recently played track')
+    .addIntegerOption((option) =>
+      option.setName('count').setDescription('How many tracks back (default 1)').setMinValue(1).setMaxValue(20).setRequired(false)
+    ),
   new SlashCommandBuilder().setName('voteskip').setDescription('Vote to skip the current track'),
   new SlashCommandBuilder()
     .setName('skipto')
@@ -53,6 +60,76 @@ const commands = [
     ),
   new SlashCommandBuilder().setName('stop').setDescription('Stop playback and clear the queue'),
   new SlashCommandBuilder().setName('clearqueue').setDescription('Clear the upcoming queue'),
+  new SlashCommandBuilder()
+    .setName('removeuser')
+    .setDescription('Remove queued tracks requested by a user')
+    .addUserOption((option) =>
+      option.setName('user').setDescription('User whose tracks should be removed').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('queuelock')
+    .setDescription('Lock or unlock queue mutations')
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Lock or unlock queue modifications')
+        .setRequired(true)
+        .addChoices(
+          { name: 'lock', value: 'lock' },
+          { name: 'unlock', value: 'unlock' }
+        )
+    ),
+  new SlashCommandBuilder()
+    .setName('queuefreeze')
+    .setDescription('Freeze or unfreeze queue mutations (manager only)')
+    .addBooleanOption((option) =>
+      option.setName('enabled').setDescription('Enable or disable freeze mode').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('sleep')
+    .setDescription('Set or cancel a sleep timer')
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Set or cancel the sleep timer')
+        .setRequired(true)
+        .addChoices(
+          { name: 'set', value: 'set' },
+          { name: 'cancel', value: 'cancel' }
+        )
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('minutes')
+        .setDescription('Minutes before stopping playback (for set)')
+        .setMinValue(1)
+        .setMaxValue(720)
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('mode247')
+    .setDescription('Enable or disable 24/7 mode')
+    .addBooleanOption((option) =>
+      option.setName('enabled').setDescription('Keep bot connected when idle').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('queuesnapshot')
+    .setDescription('Save, load, list, or delete queue snapshots')
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Snapshot action')
+        .setRequired(true)
+        .addChoices(
+          { name: 'save', value: 'save' },
+          { name: 'load', value: 'load' },
+          { name: 'list', value: 'list' },
+          { name: 'delete', value: 'delete' }
+        )
+    )
+    .addStringOption((option) =>
+      option.setName('name').setDescription('Snapshot name (required for save/load/delete)').setRequired(false)
+    ),
   new SlashCommandBuilder().setName('leave').setDescription('Disconnect from the voice channel'),
   new SlashCommandBuilder().setName('queue').setDescription('Show the current queue'),
   new SlashCommandBuilder().setName('nowplaying').setDescription('Show the currently playing track'),
@@ -237,6 +314,7 @@ const commands = [
           { name: 'now_playing_update_sec', value: 'now_playing_update_sec' },
           { name: 'auto_disconnect_sec', value: 'auto_disconnect_sec' },
           { name: 'max_queue_length', value: 'max_queue_length' },
+          { name: 'always_on', value: 'always_on' },
           { name: 'normalization_enabled', value: 'normalization_enabled' },
           { name: 'normalization_target', value: 'normalization_target' },
           { name: 'eq_preset', value: 'eq_preset' }
@@ -250,6 +328,12 @@ const commands = [
     .setDescription('Show the most played tracks in this server')
     .addIntegerOption((option) =>
       option.setName('limit').setDescription('Number of tracks to show').setMinValue(1).setMaxValue(20).setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('topartists')
+    .setDescription('Show the most played artists in this server')
+    .addIntegerOption((option) =>
+      option.setName('limit').setDescription('Number of artists to show').setMinValue(1).setMaxValue(20).setRequired(false)
     ),
   new SlashCommandBuilder().setName('history').setDescription('Show recently played tracks')
 ];

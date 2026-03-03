@@ -8,4 +8,5 @@ logs
 lavalink/application.yml
 guild-settings.json
 guild-stats.json
+queue-snapshots.json
 *.key

@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-    "deploy-commands": "node src/deploy-commands.js"
+    "deploy-commands": "node src/deploy-commands.js",
+    "check": "node --check src/index.js && node --check src/commands.js && node --check src/deploy-commands.js",
+    "test": "npm run check"
   },
   "engines": {
     "node": ">=18.17.0"

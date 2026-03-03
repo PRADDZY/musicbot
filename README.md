@@ -3,7 +3,7 @@
 A Discord music bot that uses Lavalink for playback and supports multiple streaming services via Lavalink source plugins.
 
 ## Features
-- Slash commands for play, playnext, search, insert, pause, resume, skip, voteskip, skipto, stop, clearqueue, queue, nowplaying, nowplayingcard, botinfo, replay, volume, forward, rewind, seek, lyrics, lyricslive, normalize, eq, loop, shuffle, remove, move, queuemode, radio, autoclean, ping, settings, toptracks, history, leave
+- Slash commands for play, playnext, search, insert, pause, resume, skip, unskip, jumpback, voteskip, skipto, stop, clearqueue, removeuser, queuelock, queuefreeze, sleep, mode247, queuesnapshot, queue, nowplaying, nowplayingcard, botinfo, replay, volume, forward, rewind, seek, lyrics, lyricslive, normalize, eq, loop, shuffle, remove, move, queuemode, radio, autoclean, ping, settings, toptracks, topartists, history, leave
 - `/play` accepts URLs, search queries, or an attached audio file (mp3, m4a, ogg, flac)
 - `/playnext` inserts tracks at the front of the queue
 - `/lyrics` fetches lyrics for the current track or a query
@@ -18,7 +18,11 @@ A Discord music bot that uses Lavalink for playback and supports multiple stream
 - `/eq` applies EQ presets
 - `/autoclean` removes duplicates or unavailable tracks
 - `/settings` stores per-guild defaults and limits in `guild-settings.json`
+- `/mode247` keeps the bot connected when idle (per-guild setting)
+- `/queuelock` and `/queuefreeze` add queue protection controls
+- `/queuesnapshot` saves and reloads queue states from `queue-snapshots.json`
 - `/toptracks` shows the most played tracks (from `guild-stats.json`)
+- `/topartists` shows the most played artists (derived from `guild-stats.json`)
 - Lavalink backend for stable audio delivery
 - Multi-source support (Spotify, Apple Music, Deezer, SoundCloud, Bandcamp, YouTube, and more) when corresponding Lavalink plugins are installed
 
@@ -40,6 +44,7 @@ A Discord music bot that uses Lavalink for playback and supports multiple stream
    Set `DISCORD_GUILD_ID` for faster command updates in a single test server (optional).
    Configure `LAVALINK_FALLBACKS` if you want automatic node failover.
    Update `stations.json` with radio/lofi station URLs if you want to use `/radio`.
+   Set `ALWAYS_ON_DEFAULT=true` if you want 24/7 mode on by default for new guild settings.
    Optional: install `@napi-rs/canvas` to enable `/nowplayingcard`.
    Example fallback format:
    ```bash
@@ -86,10 +91,22 @@ Replace the placeholder credential values in `lavalink/application.yml` with you
 - `/pause` - Pause playback
 - `/resume` - Resume playback
 - `/skip` - Skip the current track
+- `/unskip` - Restore the most recently played track
+- `/jumpback [count]` - Jump back in playback history
 - `/voteskip` - Vote to skip the current track
 - `/skipto position` - Skip to a queue position
 - `/stop` - Stop playback and clear the queue
 - `/clearqueue` - Clear the upcoming queue
+- `/removeuser user` - Remove queued tracks by user
+- `/queuelock lock|unlock` - Restrict queue mutations
+- `/queuefreeze enabled` - Freeze queue mutations (manager-only override)
+- `/sleep set minutes` - Set sleep timer
+- `/sleep cancel` - Cancel sleep timer
+- `/mode247 enabled` - Toggle always-on behavior per guild
+- `/queuesnapshot list` - List saved snapshots
+- `/queuesnapshot save name` - Save the current queue as a snapshot
+- `/queuesnapshot load name` - Load a saved snapshot
+- `/queuesnapshot delete name` - Delete a snapshot
 - `/leave` - Disconnect from voice
 - `/queue` - Show the current queue
 - `/nowplaying` - Show the current track
@@ -116,11 +133,12 @@ Replace the placeholder credential values in `lavalink/application.yml` with you
 - `/ping` - Discord and Lavalink latency
 - `/settings view|set` - View or update per-guild settings
 - `/toptracks [limit]` - Show most played tracks
+- `/topartists [limit]` - Show most played artists
 - `/history` - Show recently played tracks
 
 ## Notes
 - Some services are DRM-protected. For those, Lavalink plugins typically resolve metadata and stream from an available source. Ensure you comply with each service's terms.
 - If the bot doesn't connect, confirm your Lavalink host/port/password and that the Lavalink server is reachable.
-- Per-guild settings are stored in `guild-settings.json` and play counts in `guild-stats.json`.
+- Per-guild settings are stored in `guild-settings.json`, play counts in `guild-stats.json`, and queue snapshots in `queue-snapshots.json`.
 - Prefix is stored for future prefix-based commands; this bot uses slash commands today.
 - Set `NOW_PLAYING_CARD=true` to attach image cards to now playing announcements (requires `@napi-rs/canvas`).

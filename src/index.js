@@ -34,9 +34,12 @@ const nowPlayingCardRaw = String(process.env.NOW_PLAYING_CARD || 'false').toLowe
 const autoCleanMaxCheckRaw = Number(process.env.AUTOCLEAN_MAX_CHECK || 50);
 const maxQueueLengthDefaultRaw = Number(process.env.MAX_QUEUE_LENGTH_DEFAULT || 200);
 const prefixDefaultRaw = String(process.env.PREFIX_DEFAULT || '!').trim();
+const alwaysOnDefaultRaw = String(process.env.ALWAYS_ON_DEFAULT || 'false').toLowerCase().trim();
+const webhookUrlRaw = String(process.env.WEBHOOK_URL || '').trim();
 const stationsFile = process.env.STATIONS_FILE || 'stations.json';
 const guildSettingsFile = process.env.GUILD_SETTINGS_FILE || 'guild-settings.json';
 const guildStatsFile = process.env.GUILD_STATS_FILE || 'guild-stats.json';
+const queueSnapshotsFile = process.env.QUEUE_SNAPSHOTS_FILE || 'queue-snapshots.json';
 
 const config = {
   token: process.env.DISCORD_TOKEN,
@@ -60,9 +63,12 @@ const config = {
   autoCleanMaxCheck: clampNumber(autoCleanMaxCheckRaw, 5, 200),
   maxQueueLengthDefault: clampNumber(maxQueueLengthDefaultRaw, 10, 1000),
   prefixDefault: prefixDefaultRaw || '!',
+  alwaysOnDefault: alwaysOnDefaultRaw === 'true',
+  webhookUrl: webhookUrlRaw,
   stationsFile,
   guildSettingsFile,
-  guildStatsFile
+  guildStatsFile,
+  queueSnapshotsFile
 };
 
 if (!config.token || !config.clientId) {
@@ -87,8 +93,10 @@ const searchSessions = new Map();
 const SEARCH_SESSION_TTL_MS = 2 * 60 * 1000;
 const settingsStore = loadJsonFile(config.guildSettingsFile, {});
 const statsStore = loadJsonFile(config.guildStatsFile, {});
+const snapshotsStore = loadJsonFile(config.queueSnapshotsFile, {});
 let settingsSaveTimer = null;
 let statsSaveTimer = null;
+let snapshotsSaveTimer = null;
 
 const EQ_PRESETS = {
   off: Array(15).fill(0),
@@ -152,6 +160,12 @@ client.on('interactionCreate', async (interaction) => {
       case 'skip':
         await handleSkip(interaction);
         break;
+      case 'unskip':
+        await handleUnskip(interaction);
+        break;
+      case 'jumpback':
+        await handleJumpBack(interaction);
+        break;
       case 'voteskip':
         await handleVoteSkip(interaction);
         break;
@@ -163,6 +177,24 @@ client.on('interactionCreate', async (interaction) => {
         break;
       case 'clearqueue':
         await handleClearQueue(interaction);
+        break;
+      case 'removeuser':
+        await handleRemoveUser(interaction);
+        break;
+      case 'queuelock':
+        await handleQueueLock(interaction);
+        break;
+      case 'queuefreeze':
+        await handleQueueFreeze(interaction);
+        break;
+      case 'sleep':
+        await handleSleep(interaction);
+        break;
+      case 'mode247':
+        await handleMode247(interaction);
+        break;
+      case 'queuesnapshot':
+        await handleQueueSnapshot(interaction);
         break;
       case 'leave':
         await handleLeave(interaction);
@@ -235,6 +267,9 @@ client.on('interactionCreate', async (interaction) => {
         break;
       case 'toptracks':
         await handleTopTracks(interaction);
+        break;
+      case 'topartists':
+        await handleTopArtists(interaction);
         break;
       case 'history':
         await handleHistory(interaction);
@@ -317,6 +352,14 @@ function scheduleStatsSave() {
   }, 2000);
 }
 
+function scheduleSnapshotsSave() {
+  if (snapshotsSaveTimer) return;
+  snapshotsSaveTimer = setTimeout(() => {
+    saveJsonFile(config.queueSnapshotsFile, snapshotsStore);
+    snapshotsSaveTimer = null;
+  }, 2000);
+}
+
 function getDefaultGuildSettings() {
   return {
     prefix: config.prefixDefault,
@@ -326,6 +369,7 @@ function getDefaultGuildSettings() {
     nowPlayingUpdateSec: config.nowPlayingUpdateMs / 1000,
     autoDisconnectSec: config.autoDisconnectMs / 1000,
     maxQueueLength: config.maxQueueLengthDefault,
+    alwaysOn: config.alwaysOnDefault,
     normalization: {
       enabled: config.normalizationEnabledDefault,
       target: config.normalizationTargetDefault
@@ -365,6 +409,13 @@ function getGuildStats(guildId) {
     statsStore[guildId].tracks = {};
   }
   return statsStore[guildId];
+}
+
+function getGuildSnapshots(guildId) {
+  if (!snapshotsStore[guildId]) {
+    snapshotsStore[guildId] = {};
+  }
+  return snapshotsStore[guildId];
 }
 
 function buildNodes() {
@@ -461,7 +512,12 @@ function createQueue(guildId, voiceChannelId, textChannelId, player) {
     skipVotes: new Set(),
     liveLyrics: null,
     aloneTimer: null,
+    sleepTimer: null,
+    sleepEndsAt: null,
+    locked: false,
+    frozen: false,
     settings,
+    alwaysOn: settings.alwaysOn,
     normalization: {
       enabled: settings.normalization.enabled,
       target: clampNumber(settings.normalization.target, 10, 200)
@@ -480,6 +536,7 @@ function clearIdleTimer(queue) {
 }
 
 function setIdleTimer(queue) {
+  if (queue.alwaysOn) return;
   clearIdleTimer(queue);
   queue.idleTimer = setTimeout(async () => {
     await safeDisconnect(queue);
@@ -492,6 +549,7 @@ async function safeDisconnect(queue) {
     stopNowPlayingUpdates(queue);
     await stopLiveLyrics(queue, 'Live lyrics stopped (player disconnected).');
     clearAloneTimer(queue);
+    clearSleepTimer(queue);
     if (typeof shoukaku.leaveVoiceChannel === 'function') {
       await shoukaku.leaveVoiceChannel(queue.guildId);
       return;
@@ -522,6 +580,11 @@ function applySettingsToQueue(queue) {
     target: clampNumber(settings.normalization.target, 10, 200)
   };
   queue.eqPreset = settings.eqPreset;
+  queue.alwaysOn = settings.alwaysOn;
+  if (queue.alwaysOn) {
+    clearIdleTimer(queue);
+    clearAloneTimer(queue);
+  }
 }
 
 async function applyAudioSettings(queue) {
@@ -559,8 +622,22 @@ function clearAloneTimer(queue) {
   }
 }
 
+function clearSleepTimer(queue) {
+  if (queue?.sleepTimer) {
+    clearTimeout(queue.sleepTimer);
+    queue.sleepTimer = null;
+  }
+  if (queue) {
+    queue.sleepEndsAt = null;
+  }
+}
+
 async function updateAloneTimer(queue) {
   if (!queue) return;
+  if (queue.alwaysOn) {
+    clearAloneTimer(queue);
+    return;
+  }
   const autoDisconnectMs = clampNumber(queue.settings?.autoDisconnectSec ?? 0, 0, 3600) * 1000;
   if (!autoDisconnectMs) return;
 
@@ -582,6 +659,23 @@ async function updateAloneTimer(queue) {
   } catch (error) {
     // Ignore errors if fetch fails.
   }
+}
+
+function setSleepTimer(queue, minutes) {
+  clearSleepTimer(queue);
+  const delayMs = Math.max(1, Number(minutes)) * 60 * 1000;
+  queue.sleepEndsAt = Date.now() + delayMs;
+  queue.sleepTimer = setTimeout(async () => {
+    try {
+      queue.tracks = [];
+      queue.current = null;
+      await stopTrackSafe(queue.player);
+      await safeDisconnect(queue);
+      queues.delete(queue.guildId);
+    } catch (error) {
+      console.error('Sleep timer failed to stop playback:', error);
+    }
+  }, delayMs);
 }
 
 async function ensureQueueForInteraction(interaction, memberChannel) {
@@ -720,6 +814,10 @@ async function handlePlay(interaction, options = {}) {
     return interaction.editReply({ content: prepared.error });
   }
   const { queue, player, node } = prepared;
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.editReply({ content: queueMutationBlock });
+  }
   const resolveNode = player?.node || node;
   const resolved = await resolveTracks(resolveNode, query);
   if (!resolved.tracks.length) {
@@ -844,6 +942,11 @@ async function handleSearchSelect(interaction) {
   }
 
   const { queue } = prepared;
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    searchSessions.delete(sessionId);
+    return interaction.editReply({ content: queueMutationBlock, components: [] });
+  }
   const limited = applyQueueLimit(queue, [track]);
   if (!limited.tracks.length) {
     searchSessions.delete(sessionId);
@@ -885,6 +988,10 @@ async function handleInsert(interaction) {
   }
 
   const { queue, player, node } = prepared;
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.editReply({ content: queueMutationBlock });
+  }
   const resolveNode = player?.node || node;
   const resolved = await resolveTracks(resolveNode, query);
   if (!resolved.tracks.length) {
@@ -964,6 +1071,62 @@ async function handleSkip(interaction) {
   return interaction.reply({ content: 'Skipped the current track.' });
 }
 
+async function handleUnskip(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue || queue.history.length === 0) {
+    return interaction.reply({ content: 'No previous track available to unskip.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
+
+  const previous = queue.history.shift();
+  enqueueTracks(queue, [previous], true);
+  if (queue.current) {
+    await stopTrackSafe(queue.player);
+  } else {
+    await playNext(queue);
+  }
+
+  return interaction.reply({ content: `Restored previous track: ${formatTrack(previous)}` });
+}
+
+async function handleJumpBack(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue || queue.history.length === 0) {
+    return interaction.reply({ content: 'No playback history available.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
+
+  const count = interaction.options.getInteger('count') ?? 1;
+  if (count < 1 || count > 20) {
+    return interaction.reply({ content: 'Count must be between 1 and 20.', ephemeral: true });
+  }
+  if (queue.history.length < count) {
+    return interaction.reply({ content: `Only ${queue.history.length} tracks in history.`, ephemeral: true });
+  }
+
+  const [target] = queue.history.splice(count - 1, 1);
+  enqueueTracks(queue, [target], true);
+  if (queue.current) {
+    await stopTrackSafe(queue.player);
+  } else {
+    await playNext(queue);
+  }
+
+  return interaction.reply({ content: `Jumped back to: ${formatTrack(target)}` });
+}
+
 async function handleVoteSkip(interaction) {
   const queue = getQueue(interaction.guildId);
   if (!queue || !queue.current) {
@@ -1038,9 +1201,216 @@ async function handleClearQueue(interaction) {
   if (!ensureSameChannel(interaction, queue)) {
     return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
   }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
 
   queue.tracks = [];
   return interaction.reply({ content: 'Cleared the upcoming queue.' });
+}
+
+async function handleRemoveUser(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue || queue.tracks.length === 0) {
+    return interaction.reply({ content: 'The queue is empty.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
+
+  const user = interaction.options.getUser('user', true);
+  const before = queue.tracks.length;
+  queue.tracks = queue.tracks.filter((track) => track.requesterId !== user.id);
+  if (queue.mode === 'fair' && queue.tracks.length > 1) {
+    queue.tracks = rebuildFairQueue(queue.tracks);
+  }
+  const removed = before - queue.tracks.length;
+  return interaction.reply({ content: `Removed ${removed} queued track(s) requested by ${user.tag}.` });
+}
+
+async function handleQueueLock(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue) {
+    return interaction.reply({ content: 'Nothing is playing right now.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  if (!hasManageGuildPermission(interaction)) {
+    return interaction.reply({ content: 'You need Manage Server permission to lock the queue.', ephemeral: true });
+  }
+
+  const action = interaction.options.getString('action', true);
+  queue.locked = action === 'lock';
+  return interaction.reply({ content: `Queue lock ${queue.locked ? 'enabled' : 'disabled'}.` });
+}
+
+async function handleQueueFreeze(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue) {
+    return interaction.reply({ content: 'Nothing is playing right now.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  if (!hasManageGuildPermission(interaction)) {
+    return interaction.reply({ content: 'You need Manage Server permission to freeze the queue.', ephemeral: true });
+  }
+
+  const enabled = interaction.options.getBoolean('enabled', true);
+  queue.frozen = enabled;
+  return interaction.reply({ content: `Queue freeze ${enabled ? 'enabled' : 'disabled'}.` });
+}
+
+async function handleSleep(interaction) {
+  const queue = getQueue(interaction.guildId);
+  if (!queue) {
+    return interaction.reply({ content: 'Nothing is playing right now.', ephemeral: true });
+  }
+  if (!ensureSameChannel(interaction, queue)) {
+    return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+
+  const action = interaction.options.getString('action', true);
+  if (action === 'cancel') {
+    clearSleepTimer(queue);
+    return interaction.reply({ content: 'Sleep timer cancelled.' });
+  }
+
+  const minutes = interaction.options.getInteger('minutes');
+  if (!minutes || minutes < 1 || minutes > 720) {
+    return interaction.reply({ content: 'Minutes must be between 1 and 720.', ephemeral: true });
+  }
+  setSleepTimer(queue, minutes);
+  return interaction.reply({ content: `Sleep timer set for ${minutes} minute(s).` });
+}
+
+async function handleMode247(interaction) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+  if (!hasManageGuildPermission(interaction)) {
+    return interaction.reply({ content: 'You need Manage Server permission to change 24/7 mode.', ephemeral: true });
+  }
+
+  const enabled = interaction.options.getBoolean('enabled', true);
+  const settings = updateGuildSettings(guildId, { alwaysOn: enabled });
+  const queue = getQueue(guildId);
+  if (queue) {
+    queue.settings = settings;
+    queue.alwaysOn = enabled;
+    if (enabled) {
+      clearIdleTimer(queue);
+      clearAloneTimer(queue);
+    } else if (!queue.current && queue.tracks.length === 0) {
+      setIdleTimer(queue);
+    }
+  }
+
+  return interaction.reply({ content: `24/7 mode ${enabled ? 'enabled' : 'disabled'}.` });
+}
+
+async function handleQueueSnapshot(interaction) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+
+  const action = interaction.options.getString('action', true);
+  const snapshots = getGuildSnapshots(guildId);
+
+  if (action === 'list') {
+    const names = Object.keys(snapshots);
+    if (!names.length) {
+      return interaction.reply({ content: 'No snapshots saved for this server.', ephemeral: true });
+    }
+    const lines = names.map((name) => {
+      const size = snapshots[name]?.tracks?.length ?? 0;
+      return `- ${name} (${size} tracks)`;
+    });
+    return interaction.reply({ content: `Saved snapshots:\n${lines.join('\n')}` });
+  }
+
+  const name = (interaction.options.getString('name') || '').trim().toLowerCase();
+  if (!name) {
+    return interaction.reply({ content: 'Provide a snapshot name.', ephemeral: true });
+  }
+
+  if (action === 'delete') {
+    if (!snapshots[name]) {
+      return interaction.reply({ content: 'Snapshot not found.', ephemeral: true });
+    }
+    delete snapshots[name];
+    scheduleSnapshotsSave();
+    return interaction.reply({ content: `Deleted snapshot: ${name}` });
+  }
+
+  if (action === 'save') {
+    const queue = getQueue(guildId);
+    if (!queue) {
+      return interaction.reply({ content: 'Nothing is playing right now.', ephemeral: true });
+    }
+    if (!ensureSameChannel(interaction, queue)) {
+      return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+    }
+
+    const tracks = [];
+    if (queue.current) tracks.push(queue.current);
+    tracks.push(...queue.tracks);
+    if (!tracks.length) {
+      return interaction.reply({ content: 'Nothing to save in snapshot.', ephemeral: true });
+    }
+
+    snapshots[name] = {
+      createdAt: new Date().toISOString(),
+      tracks: tracks.map((track) => ({ ...track }))
+    };
+    scheduleSnapshotsSave();
+    return interaction.reply({ content: `Saved snapshot '${name}' with ${tracks.length} track(s).` });
+  }
+
+  if (action === 'load') {
+    const snapshot = snapshots[name];
+    if (!snapshot || !Array.isArray(snapshot.tracks) || snapshot.tracks.length === 0) {
+      return interaction.reply({ content: 'Snapshot not found or empty.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    const memberChannel = interaction.member?.voice?.channel;
+    const prepared = await ensureQueueForInteraction(interaction, memberChannel);
+    if (prepared.error) {
+      return interaction.editReply({ content: prepared.error });
+    }
+
+    const { queue } = prepared;
+    const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+    if (queueMutationBlock) {
+      return interaction.editReply({ content: queueMutationBlock });
+    }
+
+    const limited = applyQueueLimit(queue, snapshot.tracks.map((track) => ({ ...track })));
+    if (!limited.tracks.length) {
+      return interaction.editReply({ content: `Queue limit reached (${limited.maxQueue}).` });
+    }
+    enqueueTracks(queue, limited.tracks, false);
+    if (!queue.current) {
+      await playNext(queue);
+    }
+
+    let message = `Loaded snapshot '${name}' (${limited.tracks.length} track(s)).`;
+    if (limited.trimmed) {
+      message += ` Queue limit applied (${limited.maxQueue}).`;
+    }
+    return interaction.editReply({ content: message });
+  }
+
+  return interaction.reply({ content: 'Unsupported snapshot action.', ephemeral: true });
 }
 
 async function handleLeave(interaction) {
@@ -1487,6 +1857,10 @@ async function handleShuffle(interaction) {
   if (!ensureSameChannel(interaction, queue)) {
     return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
   }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
+  }
 
   shuffleArray(queue.tracks);
   return interaction.reply({ content: 'Queue shuffled.' });
@@ -1499,6 +1873,10 @@ async function handleRemove(interaction) {
   }
   if (!ensureSameChannel(interaction, queue)) {
     return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
   }
 
   const position = interaction.options.getInteger('position', true);
@@ -1517,6 +1895,10 @@ async function handleMove(interaction) {
   }
   if (!ensureSameChannel(interaction, queue)) {
     return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
   }
 
   const from = interaction.options.getInteger('from', true);
@@ -1586,6 +1968,10 @@ async function handleRadio(interaction) {
   }
 
   const { queue, player, node } = prepared;
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.editReply({ content: queueMutationBlock });
+  }
   const resolveNode = player?.node || node;
   const resolved = await resolveTracks(resolveNode, station.url);
   if (!resolved.tracks.length) {
@@ -1612,6 +1998,10 @@ async function handleAutoClean(interaction) {
   }
   if (!ensureSameChannel(interaction, queue)) {
     return interaction.reply({ content: 'You need to be in the same voice channel as the bot.', ephemeral: true });
+  }
+  const queueMutationBlock = getQueueMutationBlockReason(interaction, queue);
+  if (queueMutationBlock) {
+    return interaction.reply({ content: queueMutationBlock, ephemeral: true });
   }
 
   const mode = interaction.options.getString('mode', true);
@@ -1752,6 +2142,38 @@ async function handleTopTracks(interaction) {
   return interaction.reply({ content: `Top tracks:\n${lines.join('\n')}` });
 }
 
+async function handleTopArtists(interaction) {
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    return interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+  }
+
+  const limit = clampNumber(interaction.options.getInteger('limit') ?? 10, 1, 20);
+  const stats = getGuildStats(guildId);
+  const tracks = Object.values(stats.tracks || {});
+
+  if (!tracks.length) {
+    return interaction.reply({ content: 'No artist stats yet.', ephemeral: true });
+  }
+
+  const artists = new Map();
+  for (const entry of tracks) {
+    const author = String(entry.author || 'Unknown artist').trim() || 'Unknown artist';
+    const key = author.toLowerCase();
+    const current = artists.get(key) || { author, count: 0, trackCount: 0 };
+    current.count += Number(entry.count || 0);
+    current.trackCount += 1;
+    artists.set(key, current);
+  }
+
+  const sorted = Array.from(artists.values()).sort((a, b) => b.count - a.count);
+  const lines = sorted.slice(0, limit).map((entry, index) => {
+    return `${index + 1}. ${entry.author} (${entry.count} plays, ${entry.trackCount} track${entry.trackCount === 1 ? '' : 's'})`;
+  });
+
+  return interaction.reply({ content: `Top artists:\n${lines.join('\n')}` });
+}
+
 async function handleHistory(interaction) {
   const queue = getQueue(interaction.guildId);
   if (!queue || queue.history.length === 0) {
@@ -1766,6 +2188,23 @@ function ensureSameChannel(interaction, queue) {
   const memberChannelId = interaction.member?.voice?.channelId;
   if (!memberChannelId) return false;
   return memberChannelId === queue.voiceChannelId;
+}
+
+function hasManageGuildPermission(interaction) {
+  return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild);
+}
+
+function getQueueMutationBlockReason(interaction, queue) {
+  if (!queue) return null;
+  const isManager = hasManageGuildPermission(interaction);
+  if (queue.frozen && !isManager) {
+    return 'Queue is frozen. Only server managers can modify it.';
+  }
+  const isRequester = interaction.user?.id && queue.current?.requesterId === interaction.user.id;
+  if (queue.locked && !isManager && !isRequester) {
+    return 'Queue is locked. Only the current requester or a server manager can modify it.';
+  }
+  return null;
 }
 
 function getNode() {
@@ -1800,6 +2239,7 @@ function formatSettings(settings) {
     `nowPlayingUpdateSec: ${settings.nowPlayingUpdateSec}`,
     `autoDisconnectSec: ${settings.autoDisconnectSec}`,
     `maxQueueLength: ${settings.maxQueueLength}`,
+    `alwaysOn: ${settings.alwaysOn}`,
     `normalization.enabled: ${settings.normalization.enabled}`,
     `normalization.target: ${settings.normalization.target}`,
     `eqPreset: ${settings.eqPreset}`
@@ -1850,6 +2290,11 @@ function buildSettingsPatch(key, value, guildId) {
       const length = clampNumber(Number(value), 10, 1000);
       if (Number.isNaN(Number(value))) return null;
       return { maxQueueLength: length };
+    }
+    case 'always_on': {
+      const flag = parseBoolean(value);
+      if (flag === null) return null;
+      return { alwaysOn: flag };
     }
     case 'normalization_enabled': {
       const flag = parseBoolean(value);
@@ -2383,7 +2828,9 @@ async function playNext(queue) {
 
   if (!next) {
     queue.current = null;
-    setIdleTimer(queue);
+    if (!queue.alwaysOn) {
+      setIdleTimer(queue);
+    }
     return;
   }
 
